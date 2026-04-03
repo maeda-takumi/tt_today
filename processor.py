@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -27,6 +28,12 @@ BASE_DIR = Path(__file__).resolve().parent
 USER_JSON_PATH = BASE_DIR / "user.json"
 DB_PATH = BASE_DIR / "events.db"
 
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
 def load_targets(path: Path = USER_JSON_PATH) -> list[TargetUser]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -92,39 +99,41 @@ def _login(driver, wait: WebDriverWait) -> None:
 
 def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
     daily_url = f"https://timetreeapp.com/calendars/{target.tree_id}/daily/{today_str}"
+    logger.info("日次ページへアクセス: user=%s tree_id=%s url=%s", target.name, target.tree_id, daily_url)
     driver.get(daily_url)
 
     anchors = _wait_for_event_anchors_settled(driver, today_str)
 
-    for a_tag in anchors:
-        href = a_tag.get_attribute("href") or ""
-        if target.sp_id not in href:
-            continue
+    logger.info("候補イベント取得: user=%s date=%s anchor_count=%s", target.name, today_str, len(anchors))
 
-        title = ""
-        h_tags = a_tag.find_elements(By.TAG_NAME, "h3")
-        if h_tags:
-            title = h_tags[0].text.strip()
+    if not anchors:
+        return None
 
-        text_blocks = [d.text.strip() for d in a_tag.find_elements(By.TAG_NAME, "div") if d.text.strip()]
-        start_time = text_blocks[0] if len(text_blocks) >= 1 else ""
-        end_time = text_blocks[1] if len(text_blocks) >= 2 else ""
-        detail = text_blocks[2] if len(text_blocks) >= 3 else ""
+    a_tag = anchors[0]
+    href = a_tag.get_attribute("href") or ""
 
-        return {
-            "user_name": target.name,
-            "tree_id": target.tree_id,
-            "sp_id": target.sp_id,
-            "event_date": today_str,
-            "title": title,
-            "start_time": start_time,
-            "end_time": end_time,
-            "detail": detail,
-            "event_url": href,
-            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
+    title = ""
+    h_tags = a_tag.find_elements(By.TAG_NAME, "h3")
+    if h_tags:
+        title = h_tags[0].text.strip()
 
-    return None
+    text_blocks = [d.text.strip() for d in a_tag.find_elements(By.TAG_NAME, "div") if d.text.strip()]
+    start_time = text_blocks[0] if len(text_blocks) >= 1 else ""
+    end_time = text_blocks[1] if len(text_blocks) >= 2 else ""
+    detail = text_blocks[2] if len(text_blocks) >= 3 else ""
+
+    return {
+        "user_name": target.name,
+        "tree_id": target.tree_id,
+        "sp_id": target.sp_id,
+        "event_date": today_str,
+        "title": title,
+        "start_time": start_time,
+        "end_time": end_time,
+        "detail": detail,
+        "event_url": href,
+        "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 
 def _wait_for_event_anchors_settled(
@@ -211,6 +220,7 @@ def run_daily_scraping() -> dict:
     targets = load_targets()
     init_db()
 
+    logger.info("スクレイピング開始: target_count=%s", len(targets))
     if not targets:
         return {"ok": False, "saved_count": 0, "message": "user.json の users が空です。"}
 
@@ -222,18 +232,33 @@ def run_daily_scraping() -> dict:
         # 実行毎に1回ログイン
         _login(driver, wait)
         events = []
+        no_event_users = []
         for target in targets:
-            event = _extract_event_from_daily(driver, target, today_str)
-            if event:
-                events.append(event)
+            try:
+                event = _extract_event_from_daily(driver, target, today_str)
+                if event:
+                    events.append(event)
+                    logger.info("イベント取得成功: user=%s date=%s title=%s", target.name, today_str, event.get("title", ""))
+                else:
+                    no_event_users.append(target.name)
+                    logger.info("イベントなし: user=%s date=%s", target.name, today_str)
+            except Exception:
+                logger.exception("ユーザー処理失敗: user=%s tree_id=%s", target.name, target.tree_id)
+                no_event_users.append(target.name)
 
         saved_count = _save_events(events)
+        logger.info(
+            "スクレイピング終了: saved_count=%s target_count=%s no_event_count=%s",
+            saved_count,
+            len(targets),
+            len(no_event_users),
+        )
         return {
             "ok": True,
             "saved_count": saved_count,
             "target_count": len(targets),
             "event_date": today_str,
-            "message": f"{saved_count}件を保存しました。",
+            "message": f"{saved_count}件を保存しました。（対象{len(targets)}件 / 予定なし{len(no_event_users)}件）",
         }
     finally:
         driver.quit()
