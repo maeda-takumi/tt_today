@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 from selenium import webdriver
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -92,11 +94,7 @@ def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
     daily_url = f"https://timetreeapp.com/calendars/{target.tree_id}/daily/{today_str}"
     driver.get(daily_url)
 
-    wait = WebDriverWait(driver, 10)
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'ul[data-date="{today_str}"]')))
-
-    ul = driver.find_element(By.CSS_SELECTOR, f'ul[data-date="{today_str}"]')
-    anchors = ul.find_elements(By.TAG_NAME, "a")
+    anchors = _wait_for_event_anchors_settled(driver, today_str)
 
     for a_tag in anchors:
         href = a_tag.get_attribute("href") or ""
@@ -128,6 +126,44 @@ def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
 
     return None
 
+
+def _wait_for_event_anchors_settled(
+    driver,
+    date_str: str,
+    timeout: float = 12.0,
+    poll_interval: float = 0.4,
+) -> list:
+    selector = (By.CSS_SELECTOR, f'ul[data-date="{date_str}"]')
+    WebDriverWait(driver, 20).until(EC.presence_of_element_located(selector))
+
+    started_at = time.time()
+    prev_count = -1
+    stable_hits = 0
+    latest_anchors = []
+
+    while time.time() - started_at < timeout:
+        try:
+            ul = driver.find_element(*selector)
+            latest_anchors = ul.find_elements(By.TAG_NAME, "a")
+            count = len(latest_anchors)
+        except StaleElementReferenceException:
+            prev_count = -1
+            stable_hits = 0
+            time.sleep(poll_interval)
+            continue
+
+        if count == prev_count:
+            stable_hits += 1
+        else:
+            stable_hits = 0
+            prev_count = count
+
+        if stable_hits >= 2:
+            return latest_anchors
+
+        time.sleep(poll_interval)
+
+    return latest_anchors
 
 def _save_events(events: list[dict], path: Path = DB_PATH) -> int:
     if not events:
