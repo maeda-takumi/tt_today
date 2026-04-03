@@ -50,9 +50,10 @@ def load_targets(path: Path = USER_JSON_PATH) -> list[TargetUser]:
 
 def init_db(path: Path = DB_PATH) -> None:
     with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE IF EXISTS events")
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS events (
+            CREATE TABLE events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_name TEXT NOT NULL,
                 tree_id TEXT NOT NULL,
@@ -63,8 +64,7 @@ def init_db(path: Path = DB_PATH) -> None:
                 end_time TEXT,
                 detail TEXT,
                 event_url TEXT,
-                scraped_at TEXT NOT NULL,
-                UNIQUE(tree_id, sp_id, event_date)
+                scraped_at TEXT NOT NULL
             )
             """
         )
@@ -97,7 +97,7 @@ def _login(driver, wait: WebDriverWait) -> None:
     wait.until(EC.url_contains("/calendars/"))
 
 
-def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
+def _extract_events_from_daily(driver, target: TargetUser, today_str: str) -> list[dict]:
     daily_url = f"https://timetreeapp.com/calendars/{target.tree_id}/daily/{today_str}"
     logger.info("日次ページへアクセス: user=%s tree_id=%s url=%s", target.name, target.tree_id, daily_url)
     driver.get(daily_url)
@@ -106,34 +106,39 @@ def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
 
     logger.info("候補イベント取得: user=%s date=%s anchor_count=%s", target.name, today_str, len(anchors))
 
+    events: list[dict] = []
     if not anchors:
-        return None
+        return events
 
-    a_tag = anchors[0]
-    href = a_tag.get_attribute("href") or ""
+    for a_tag in anchors:
+        href = a_tag.get_attribute("href") or ""
 
-    title = ""
-    h_tags = a_tag.find_elements(By.TAG_NAME, "h3")
-    if h_tags:
-        title = h_tags[0].text.strip()
+        title = ""
+        h_tags = a_tag.find_elements(By.TAG_NAME, "h3")
+        if h_tags:
+            title = h_tags[0].text.strip()
 
-    text_blocks = [d.text.strip() for d in a_tag.find_elements(By.TAG_NAME, "div") if d.text.strip()]
-    start_time = text_blocks[0] if len(text_blocks) >= 1 else ""
-    end_time = text_blocks[1] if len(text_blocks) >= 2 else ""
-    detail = text_blocks[2] if len(text_blocks) >= 3 else ""
+        text_blocks = [d.text.strip() for d in a_tag.find_elements(By.TAG_NAME, "div") if d.text.strip()]
+        start_time = text_blocks[0] if len(text_blocks) >= 1 else ""
+        end_time = text_blocks[1] if len(text_blocks) >= 2 else ""
+        detail = text_blocks[2] if len(text_blocks) >= 3 else ""
 
-    return {
-        "user_name": target.name,
-        "tree_id": target.tree_id,
-        "sp_id": target.sp_id,
-        "event_date": today_str,
-        "title": title,
-        "start_time": start_time,
-        "end_time": end_time,
-        "detail": detail,
-        "event_url": href,
-        "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
+        events.append(
+            {
+                "user_name": target.name,
+                "tree_id": target.tree_id,
+                "sp_id": target.sp_id,
+                "event_date": today_str,
+                "title": title,
+                "start_time": start_time,
+                "end_time": end_time,
+                "detail": detail,
+                "event_url": href,
+                "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+
+    return events
 
 
 def _wait_for_event_anchors_settled(
@@ -183,14 +188,6 @@ def _save_events(events: list[dict], path: Path = DB_PATH) -> int:
         user_name, tree_id, sp_id, event_date, title,
         start_time, end_time, detail, event_url, scraped_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(tree_id, sp_id, event_date) DO UPDATE SET
-        user_name=excluded.user_name,
-        title=excluded.title,
-        start_time=excluded.start_time,
-        end_time=excluded.end_time,
-        detail=excluded.detail,
-        event_url=excluded.event_url,
-        scraped_at=excluded.scraped_at
     """
 
     rows = [
@@ -235,10 +232,10 @@ def run_daily_scraping() -> dict:
         no_event_users = []
         for target in targets:
             try:
-                event = _extract_event_from_daily(driver, target, today_str)
-                if event:
-                    events.append(event)
-                    logger.info("イベント取得成功: user=%s date=%s title=%s", target.name, today_str, event.get("title", ""))
+                user_events = _extract_events_from_daily(driver, target, today_str)
+                if user_events:
+                    events.extend(user_events)
+                    logger.info("イベント取得成功: user=%s date=%s count=%s", target.name, today_str, len(user_events))
                 else:
                     no_event_users.append(target.name)
                     logger.info("イベントなし: user=%s date=%s", target.name, today_str)
