@@ -10,7 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from selenium import webdriver
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -148,8 +148,20 @@ def _wait_for_event_anchors_settled(
     timeout: float = 12.0,
     poll_interval: float = 0.4,
 ) -> list:
-    selector = (By.CSS_SELECTOR, f'ul[data-date="{date_str}"]')
-    WebDriverWait(driver, 20).until(EC.presence_of_element_located(selector))
+    specific_selector = (By.CSS_SELECTOR, f'ul[data-date="{date_str}"]')
+    fallback_selectors = [
+        specific_selector,
+        (By.CSS_SELECTOR, "ul[data-date]"),
+        (By.CSS_SELECTOR, "main"),
+    ]
+
+    try:
+        WebDriverWait(driver, 20).until(
+            lambda d: any(d.find_elements(*selector) for selector in fallback_selectors)
+        )
+    except TimeoutException:
+        logger.warning("イベントコンテナ待機タイムアウト: date=%s", date_str)
+        return []
 
     started_at = time.time()
     prev_count = -1
@@ -158,10 +170,14 @@ def _wait_for_event_anchors_settled(
 
     while time.time() - started_at < timeout:
         try:
-            ul = driver.find_element(*selector)
-            latest_anchors = ul.find_elements(By.TAG_NAME, "a")
+            containers = driver.find_elements(*specific_selector)
+            if containers:
+                latest_anchors = containers[0].find_elements(By.TAG_NAME, "a")
+            else:
+                # data-date が見つからないページ構造でも、日次イベントリンクを回収できるようにする
+                latest_anchors = driver.find_elements(By.CSS_SELECTOR, 'main a[href*="/events/"]')
             count = len(latest_anchors)
-        except StaleElementReferenceException:
+        except (NoSuchElementException, StaleElementReferenceException):
             prev_count = -1
             stable_hits = 0
             time.sleep(poll_interval)

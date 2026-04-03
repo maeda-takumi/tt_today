@@ -133,7 +133,7 @@ def export_events_to_sheets(
         for sp_id, user_name in spid_to_name.items():
             rows = conn.execute(
                 """
-                SELECT user_name, event_date, start_time, end_time, title
+                SELECT user_name, event_date, start_time, end_time, title,detail
                 FROM events
                 WHERE event_date = ? AND sp_id = ?
                 ORDER BY start_time ASC
@@ -145,8 +145,8 @@ def export_events_to_sheets(
                 _build_row(
                     user_name=(r["user_name"] or user_name),
                     event_date=r["event_date"],
-                    start_time=r["start_time"],
-                    end_time=r["end_time"],
+                    start_time=r["end_time"],
+                    end_time=r["detail"],
                     title=r["title"],
                 )
                 for r in rows
