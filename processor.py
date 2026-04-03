@@ -27,6 +27,7 @@ class TargetUser:
 BASE_DIR = Path(__file__).resolve().parent
 USER_JSON_PATH = BASE_DIR / "user.json"
 DB_PATH = BASE_DIR / "events.db"
+SERVICE_ACCOUNT_JSON_PATH = BASE_DIR / "service_account.json"
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -244,19 +245,18 @@ def run_daily_scraping() -> dict:
                 no_event_users.append(target.name)
 
         saved_count = _save_events(events)
-        service_account_json_path = BASE_DIR / "service_account.json"  # 実配置に合わせて調整
 
         try:
             export_events_to_sheets(
                 db_path=DB_PATH,
                 user_json_path=USER_JSON_PATH,
                 event_date=today_str,  # YYYY-MM-DD
-                service_account_json_path=service_account_json_path,
+                service_account_json_path=SERVICE_ACCOUNT_JSON_PATH,
             )
             logger.info("スプレッドシート反映完了: date=%s", today_str)
         except Exception:
             logger.exception("スプレッドシート反映失敗: date=%s", today_str)
-            
+
         logger.info(
             "スクレイピング終了: saved_count=%s target_count=%s no_event_count=%s",
             saved_count,

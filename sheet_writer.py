@@ -110,14 +110,22 @@ def export_events_to_sheets(
     db_path: Path,
     user_json_path: Path,
     event_date: str,
-    service_account_json_path: Path,
+    service_account_json_path: Path | None = None,
 ) -> dict:
     """
     event_date: "YYYY-MM-DD"
     同一sp_id内は start_time 昇順で出力
     """
     spid_to_name = _load_spid_to_name(user_json_path)
-    client = _create_gspread_client(service_account_json_path)
+
+    # スプシ書き込み時の認証情報は ui.py と同階層の service_account.json を既定利用
+    default_service_account_path = Path(__file__).resolve().with_name("service_account.json")
+    credentials_path = service_account_json_path or default_service_account_path
+
+    if not credentials_path.exists():
+        raise FileNotFoundError(f"service_account.json が見つかりません: {credentials_path}")
+
+    client = _create_gspread_client(credentials_path)
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
