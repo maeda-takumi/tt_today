@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+
+@dataclass
+class TargetUser:
+    name: str
+    tree_id: str
+    sp_id: str
+
+
+BASE_DIR = Path(__file__).resolve().parent
+USER_JSON_PATH = BASE_DIR / "user.json"
+DB_PATH = BASE_DIR / "events.db"
+
+
+def load_targets(path: Path = USER_JSON_PATH) -> list[TargetUser]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    users = data.get("users", [])
+    targets: list[TargetUser] = []
+    for row in users:
+        name = str(row.get("name", "")).strip()
+        tree_id = str(row.get("tree_id", "")).strip()
+        sp_id = str(row.get("sp_id", "")).strip()
+        if name and tree_id and sp_id:
+            targets.append(TargetUser(name=name, tree_id=tree_id, sp_id=sp_id))
+    return targets
+
+
+def init_db(path: Path = DB_PATH) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_name TEXT NOT NULL,
+                tree_id TEXT NOT NULL,
+                sp_id TEXT NOT NULL,
+                event_date TEXT NOT NULL,
+                title TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                detail TEXT,
+                event_url TEXT,
+                scraped_at TEXT NOT NULL,
+                UNIQUE(tree_id, sp_id, event_date)
+            )
+            """
+        )
+        conn.commit()
+
+
+def _create_driver() -> webdriver.Chrome:
+    options = webdriver.ChromeOptions()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--start-maximized")
+    options.add_argument("--lang=ja-JP")
+    return webdriver.Chrome(options=options)
+
+
+def _login(driver, wait: WebDriverWait) -> None:
+    email = "jiangqiantian54@gmail.com"
+    password = "maedamaeda0612"
+
+    driver.get("https://timetreeapp.com/signin")
+
+    email_input = wait.until(EC.presence_of_element_located((By.NAME, "email")))
+    email_input.clear()
+    email_input.send_keys(email)
+
+    password_input = driver.find_element(By.NAME, "password")
+    password_input.clear()
+    password_input.send_keys(password)
+    password_input.send_keys(Keys.ENTER)
+
+    wait.until(EC.url_contains("/calendars/"))
+
+
+def _extract_event_from_daily(driver, target: TargetUser, today_str: str):
+    daily_url = f"https://timetreeapp.com/calendars/{target.tree_id}/daily/{today_str}"
+    driver.get(daily_url)
+
+    wait = WebDriverWait(driver, 10)
+    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, f'ul[data-date="{today_str}"]')))
+
+    ul = driver.find_element(By.CSS_SELECTOR, f'ul[data-date="{today_str}"]')
+    anchors = ul.find_elements(By.TAG_NAME, "a")
+
+    for a_tag in anchors:
+        href = a_tag.get_attribute("href") or ""
+        if target.sp_id not in href:
+            continue
+
+        title = ""
+        h_tags = a_tag.find_elements(By.TAG_NAME, "h3")
+        if h_tags:
+            title = h_tags[0].text.strip()
+
+        text_blocks = [d.text.strip() for d in a_tag.find_elements(By.TAG_NAME, "div") if d.text.strip()]
+        start_time = text_blocks[0] if len(text_blocks) >= 1 else ""
+        end_time = text_blocks[1] if len(text_blocks) >= 2 else ""
+        detail = text_blocks[2] if len(text_blocks) >= 3 else ""
+
+        return {
+            "user_name": target.name,
+            "tree_id": target.tree_id,
+            "sp_id": target.sp_id,
+            "event_date": today_str,
+            "title": title,
+            "start_time": start_time,
+            "end_time": end_time,
+            "detail": detail,
+            "event_url": href,
+            "scraped_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    return None
+
+
+def _save_events(events: list[dict], path: Path = DB_PATH) -> int:
+    if not events:
+        return 0
+
+    sql = """
+    INSERT INTO events (
+        user_name, tree_id, sp_id, event_date, title,
+        start_time, end_time, detail, event_url, scraped_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(tree_id, sp_id, event_date) DO UPDATE SET
+        user_name=excluded.user_name,
+        title=excluded.title,
+        start_time=excluded.start_time,
+        end_time=excluded.end_time,
+        detail=excluded.detail,
+        event_url=excluded.event_url,
+        scraped_at=excluded.scraped_at
+    """
+
+    rows = [
+        (
+            e["user_name"],
+            e["tree_id"],
+            e["sp_id"],
+            e["event_date"],
+            e["title"],
+            e["start_time"],
+            e["end_time"],
+            e["detail"],
+            e["event_url"],
+            e["scraped_at"],
+        )
+        for e in events
+    ]
+
+    with sqlite3.connect(path) as conn:
+        conn.executemany(sql, rows)
+        conn.commit()
+
+    return len(rows)
+
+
+def run_daily_scraping() -> dict:
+    targets = load_targets()
+    init_db()
+
+    if not targets:
+        return {"ok": False, "saved_count": 0, "message": "user.json の users が空です。"}
+
+    today_str = date.today().isoformat()
+    driver = _create_driver()
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        # 実行毎に1回ログイン
+        _login(driver, wait)
+        events = []
+        for target in targets:
+            event = _extract_event_from_daily(driver, target, today_str)
+            if event:
+                events.append(event)
+
+        saved_count = _save_events(events)
+        return {
+            "ok": True,
+            "saved_count": saved_count,
+            "target_count": len(targets),
+            "event_date": today_str,
+            "message": f"{saved_count}件を保存しました。",
+        }
+    finally:
+        driver.quit()
