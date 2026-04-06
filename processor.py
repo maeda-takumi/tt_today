@@ -104,6 +104,22 @@ def _extract_events_from_daily(driver, target: TargetUser, today_str: str) -> li
     driver.get(daily_url)
 
     anchors = _wait_for_event_anchors_settled(driver, today_str)
+    if not anchors:
+        # 表示遅延で0件判定になるケースを避けるため、再読み込みを挟んで再試行する
+        max_retries = 2
+        for retry in range(1, max_retries + 1):
+            logger.info(
+                "イベント0件のため再試行: user=%s date=%s retry=%s/%s",
+                target.name,
+                today_str,
+                retry,
+                max_retries,
+            )
+            time.sleep(1.2)
+            driver.refresh()
+            anchors = _wait_for_event_anchors_settled(driver, today_str, timeout=16.0)
+            if anchors:
+                break
 
     logger.info("候補イベント取得: user=%s date=%s anchor_count=%s", target.name, today_str, len(anchors))
 
@@ -167,6 +183,7 @@ def _wait_for_event_anchors_settled(
     prev_count = -1
     stable_hits = 0
     latest_anchors = []
+    min_zero_wait = 3.0
 
     while time.time() - started_at < timeout:
         try:
@@ -189,7 +206,12 @@ def _wait_for_event_anchors_settled(
             stable_hits = 0
             prev_count = count
 
-        if stable_hits >= 2:
+        if count > 0 and stable_hits >= 2:
+            return latest_anchors
+
+        # 0件は描画途中の可能性があるため、最短待機時間＋安定回数を増やして判定する
+        elapsed = time.time() - started_at
+        if count == 0 and elapsed >= min_zero_wait and stable_hits >= 5:
             return latest_anchors
 
         time.sleep(poll_interval)
