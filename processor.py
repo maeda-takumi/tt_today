@@ -261,8 +261,11 @@ def _save_events(events: list[dict], path: Path = DB_PATH) -> int:
     return len(rows)
 
 
-def run_daily_scraping() -> dict:
+def run_daily_scraping(selected_user_names: list[str] | None = None) -> dict:
     targets = load_targets()
+    selected_names = {name.strip() for name in (selected_user_names or []) if name.strip()}
+    if selected_names:
+        targets = [target for target in targets if target.name in selected_names]
     init_db()
 
     logger.info("スクレイピング開始: target_count=%s", len(targets))

@@ -5,7 +5,7 @@ import tkinter as tk
 from datetime import datetime, timedelta
 from tkinter import messagebox, ttk
 
-from processor import run_daily_scraping
+from processor import load_targets, run_daily_scraping
 from style import apply_style
 
 
@@ -21,6 +21,8 @@ class PollingApp:
         self.running = False
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
+        self.user_targets = load_targets()
+        self.user_selection_vars: dict[str, tk.BooleanVar] = {}
 
         self._build_ui()
 
@@ -46,6 +48,19 @@ class PollingApp:
         self.time_entry = ttk.Entry(form, textvariable=self.time_var, width=12, style="App.TEntry")
         self.time_entry.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
+        ttk.Label(form, text="今すぐ実行対象ユーザ", style="Body.TLabel").grid(row=2, column=0, sticky="w", pady=(16, 0))
+        users_frame = ttk.Frame(form, style="Card.TFrame")
+        users_frame.grid(row=3, column=0, sticky="w", pady=(6, 0))
+        for idx, target in enumerate(self.user_targets):
+            var = tk.BooleanVar(value=True)
+            self.user_selection_vars[target.name] = var
+            ttk.Checkbutton(users_frame, text=target.name, variable=var).grid(
+                row=idx // 3,
+                column=idx % 3,
+                sticky="w",
+                padx=(0, 14),
+                pady=(0, 4),
+            )
         button_row = ttk.Frame(card, style="Card.TFrame")
         button_row.pack(fill="x", pady=(20, 12))
 
@@ -134,9 +149,13 @@ class PollingApp:
         self.status_var.set("停止中")
         self.log("ポーリング停止")
 
-    def _run_scraping_job(self):
-        self.log("スクレイピング実行開始")
-        result = run_daily_scraping()
+    def _run_scraping_job(self, selected_user_names: list[str] | None = None):
+        if selected_user_names is None:
+            self.log("スクレイピング実行開始（全ユーザ）")
+        else:
+            self.log(f"スクレイピング実行開始（選択ユーザ: {', '.join(selected_user_names)}）")
+
+        result = run_daily_scraping(selected_user_names=selected_user_names)
         if result.get("ok"):
             self.log(result.get("message", "完了"))
         else:
@@ -152,12 +171,19 @@ class PollingApp:
                     return
 
             try:
-                self._run_scraping_job()
+                # ポーリング時は無条件で全ユーザを実行
+                self._run_scraping_job(selected_user_names=None)
             except Exception as exc:
                 self.log(f"実行失敗: {exc}")
 
     def run_now(self):
-        threading.Thread(target=self._run_scraping_job, daemon=True).start()
+        selected_user_names = [
+            name for name, var in self.user_selection_vars.items() if var.get()
+        ]
+        if not selected_user_names:
+            messagebox.showerror("入力エラー", "今すぐ実行するユーザを1人以上選択してください。")
+            return
+        threading.Thread(target=self._run_scraping_job, args=(selected_user_names,), daemon=True).start()
 
 
 def main():
