@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2.service_account import Credentials
 
 
@@ -14,6 +15,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 SHEET_NAME = "データ"
+logger = logging.getLogger(__name__)
 
 
 def _to_yyyy_mm_dd(date_str: str) -> str:
@@ -127,6 +129,9 @@ def export_events_to_sheets(
 
     client = _create_gspread_client(credentials_path)
 
+    write_errors: list[dict[str, str]] = []
+    updated_count = 0
+
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
 
@@ -152,14 +157,55 @@ def export_events_to_sheets(
                 for r in rows
             ]
 
-            sh = client.open_by_key(sp_id)
-            ws = sh.worksheet(SHEET_NAME)
+            try:
+                sh = client.open_by_key(sp_id)
+                ws = sh.worksheet(SHEET_NAME)
 
-            # 2行目以降を全消し
-            ws.batch_clear(["A2:H"])
+                # 2行目以降を全消し
+                ws.batch_clear(["A2:H"])
 
-            # データがあるときだけ書き込み
-            if values:
-                ws.update("A2:H", values, value_input_option="RAW")
+                # データがあるときだけ書き込み
+                if values:
+                    ws.update("A2:H", values, value_input_option="RAW")
+                updated_count += 1
+            except PermissionError:
+                write_errors.append(
+                    {
+                        "sp_id": sp_id,
+                        "user_name": user_name,
+                        "reason": (
+                            "service_account.json の client_email に対象スプレッドシートの閲覧/編集権限がありません。"
+                        ),
+                    }
+                )
+            except APIError as ex:
+                error_reason = str(ex)
+                if "403" in error_reason:
+                    write_errors.append(
+                        {
+                            "sp_id": sp_id,
+                            "user_name": user_name,
+                            "reason": (
+                                "Google Sheets API 403: service_account.json の client_email に対象シートの権限が必要です。"
+                            ),
+                        }
+                    )
+                else:
+                    raise
 
-    return {"ok": True, "message": "sheet export done"}
+    if write_errors:
+        for err in write_errors:
+            logger.warning(
+                "シート書き込みスキップ: user=%s sp_id=%s reason=%s",
+                err["user_name"],
+                err["sp_id"],
+                err["reason"],
+            )
+
+    return {
+        "ok": len(write_errors) == 0,
+        "updated_count": updated_count,
+        "error_count": len(write_errors),
+        "errors": write_errors,
+        "message": "sheet export done",
+    }

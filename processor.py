@@ -297,13 +297,25 @@ def run_daily_scraping(selected_user_names: list[str] | None = None) -> dict:
         saved_count = _save_events(events)
 
         try:
-            export_events_to_sheets(
+            export_result = export_events_to_sheets(
                 db_path=DB_PATH,
                 user_json_path=USER_JSON_PATH,
                 event_date=today_str,  # YYYY-MM-DD
                 service_account_json_path=SERVICE_ACCOUNT_JSON_PATH,
             )
-            logger.info("スプレッドシート反映完了: date=%s", today_str)
+            if export_result.get("ok"):
+                logger.info(
+                    "スプレッドシート反映完了: date=%s updated_count=%s",
+                    today_str,
+                    export_result.get("updated_count", 0),
+                )
+            else:
+                logger.warning(
+                    "スプレッドシート反映一部失敗: date=%s updated_count=%s error_count=%s",
+                    today_str,
+                    export_result.get("updated_count", 0),
+                    export_result.get("error_count", 0),
+                )
         except Exception:
             logger.exception("スプレッドシート反映失敗: date=%s", today_str)
 
