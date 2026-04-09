@@ -117,7 +117,7 @@ def _extract_events_from_daily(driver, target: TargetUser, today_str: str) -> li
             )
             time.sleep(1.2)
             driver.refresh()
-            anchors = _wait_for_event_anchors_settled(driver, today_str, timeout=16.0)
+            anchors = _wait_for_event_anchors_settled(driver, today_str, timeout=24.0)
             if anchors:
                 break
 
@@ -161,8 +161,8 @@ def _extract_events_from_daily(driver, target: TargetUser, today_str: str) -> li
 def _wait_for_event_anchors_settled(
     driver,
     date_str: str,
-    timeout: float = 12.0,
-    poll_interval: float = 0.4,
+    timeout: float = 20.0,
+    poll_interval: float = 0.6,
 ) -> list:
     specific_selector = (By.CSS_SELECTOR, f'ul[data-date="{date_str}"]')
     fallback_selectors = [
@@ -180,10 +180,11 @@ def _wait_for_event_anchors_settled(
         return []
 
     started_at = time.time()
-    prev_count = -1
+    prev_urls: tuple[str, ...] = ()
     stable_hits = 0
     latest_anchors = []
-    min_zero_wait = 3.0
+    min_zero_wait = 5.0
+    min_non_zero_wait = 2.0
 
     while time.time() - started_at < timeout:
         try:
@@ -193,24 +194,32 @@ def _wait_for_event_anchors_settled(
             else:
                 # data-date が見つからないページ構造でも、日次イベントリンクを回収できるようにする
                 latest_anchors = driver.find_elements(By.CSS_SELECTOR, 'main a[href*="/events/"]')
-            count = len(latest_anchors)
+            event_anchors = []
+            for anchor in latest_anchors:
+                href = (anchor.get_attribute("href") or "").strip()
+                if "/events/" in href:
+                    event_anchors.append(anchor)
+            latest_anchors = event_anchors
+            urls = tuple(sorted({(a.get_attribute("href") or "").strip() for a in latest_anchors}))
+            count = len(urls)
         except (NoSuchElementException, StaleElementReferenceException):
-            prev_count = -1
+            prev_urls = ()
             stable_hits = 0
             time.sleep(poll_interval)
             continue
 
-        if count == prev_count:
+        if urls == prev_urls:
             stable_hits += 1
         else:
             stable_hits = 0
-            prev_count = count
+            prev_urls = urls
 
-        if count > 0 and stable_hits >= 2:
+        elapsed = time.time() - started_at
+        # 0→n件の途中変化で取りこぼさないように、最短待機時間を設けて複数回安定を確認する
+        if count > 0 and elapsed >= min_non_zero_wait and stable_hits >= 2:
             return latest_anchors
 
         # 0件は描画途中の可能性があるため、最短待機時間＋安定回数を増やして判定する
-        elapsed = time.time() - started_at
         if count == 0 and elapsed >= min_zero_wait and stable_hits >= 5:
             return latest_anchors
 
