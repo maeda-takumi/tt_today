@@ -302,6 +302,7 @@ def run_daily_scraping(selected_user_names: list[str] | None = None) -> dict:
                 user_json_path=USER_JSON_PATH,
                 event_date=today_str,  # YYYY-MM-DD
                 service_account_json_path=SERVICE_ACCOUNT_JSON_PATH,
+                selected_user_names=selected_user_names,
             )
             if export_result.get("ok"):
                 logger.info(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from datetime import datetime
@@ -113,12 +114,14 @@ def export_events_to_sheets(
     user_json_path: Path,
     event_date: str,
     service_account_json_path: Path | None = None,
+    selected_user_names: list[str] | None = None,
 ) -> dict:
     """
     event_date: "YYYY-MM-DD"
     同一sp_id内は start_time 昇順で出力
     """
     spid_to_name = _load_spid_to_name(user_json_path)
+    selected_names = {name.strip() for name in (selected_user_names or []) if name.strip()}
 
     # スプシ書き込み時の認証情報は ui.py と同階層の service_account.json を既定利用
     default_service_account_path = Path(__file__).resolve().with_name("service_account.json")
@@ -136,6 +139,8 @@ def export_events_to_sheets(
         conn.row_factory = sqlite3.Row
 
         for sp_id, user_name in spid_to_name.items():
+            if selected_names and user_name not in selected_names:
+                continue
             rows = conn.execute(
                 """
                 SELECT user_name, event_date, start_time, end_time, title,detail
